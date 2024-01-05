@@ -9,7 +9,7 @@ import time
 import torch
 import torch.nn.functional as F
 from torchvision import transforms
-from PIL import Image
+from PIL import Image, ImageFile
 from transformers import CLIPImageProcessor
 from accelerate import Accelerator
 from accelerate.logging import get_logger
@@ -20,6 +20,8 @@ from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjec
 from ip_adapter.ip_adapter_faceid import MLPProjModel
 from ip_adapter.utils import is_torch2_available
 from ip_adapter.attention_processor_faceid import LoRAAttnProcessor, LoRAIPAttnProcessor
+
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 # Dataset
