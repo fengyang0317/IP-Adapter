@@ -1,3 +1,4 @@
+import io
 import os
 import random
 import argparse
@@ -14,6 +15,7 @@ from transformers import CLIPImageProcessor
 from accelerate import Accelerator
 from accelerate.logging import get_logger
 from accelerate.utils import ProjectConfiguration
+import datasets
 from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
 from transformers import CLIPTextModel, CLIPTokenizer, CLIPVisionModelWithProjection
 
@@ -25,19 +27,15 @@ ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 
 # Dataset
-class MyDataset(torch.utils.data.Dataset):
+class MyDataset:
 
-    def __init__(self, json_file, tokenizer, size=512, t_drop_rate=0.05, i_drop_rate=0.05, ti_drop_rate=0.05, image_root_path=""):
-        super().__init__()
-
+    def __init__(self, dataset_path, tokenizer, size=512, t_drop_rate=0.05, i_drop_rate=0.05, ti_drop_rate=0.05):
         self.tokenizer = tokenizer
         self.size = size
         self.i_drop_rate = i_drop_rate
         self.t_drop_rate = t_drop_rate
         self.ti_drop_rate = ti_drop_rate
-        self.image_root_path = image_root_path
-
-        self.data = json.load(open(json_file)) # list of dict: [{"image_file": "1.png", "id_embed_file": "faceid.bin"}]
+        self.dataset_path = dataset_path
 
         self.transform = transforms.Compose([
             transforms.Resize(self.size, interpolation=transforms.InterpolationMode.BILINEAR),
@@ -46,20 +44,15 @@ class MyDataset(torch.utils.data.Dataset):
             transforms.Normalize([0.5], [0.5]),
         ])
 
-        
-        
-    def __getitem__(self, idx):
-        item = self.data[idx] 
-        text = item["text"]
-        image_file = item["image_file"]
-        
+    def transform_fn(self, example):
+        text = example["caption"]
+
         # read image
-        raw_image = Image.open(os.path.join(self.image_root_path, image_file))
+        raw_image = Image.open(io.BytesIO(example['jpg']['bytes']))
         image = self.transform(raw_image.convert("RGB"))
 
-        face_id_embed = torch.load(item["id_embed_file"], map_location="cpu")
-        face_id_embed = torch.from_numpy(face_id_embed)
-        
+        face_id_embed = torch.Tensor(example['face_emb'])
+
         # drop
         drop_image_embed = 0
         rand_num = random.random()
@@ -80,7 +73,7 @@ class MyDataset(torch.utils.data.Dataset):
             truncation=True,
             return_tensors="pt"
         ).input_ids
-        
+
         return {
             "image": image,
             "text_input_ids": text_input_ids,
@@ -88,15 +81,17 @@ class MyDataset(torch.utils.data.Dataset):
             "drop_image_embed": drop_image_embed
         }
 
-    def __len__(self):
-        return len(self.data)
-    
+    def get_ds(self):
+        ds = datasets.load_dataset(self.dataset_path, split='train', streaming=True)
+        ds = ds.map(self.transform_fn)
+        return ds
+
 
 def collate_fn(data):
     images = torch.stack([example["image"] for example in data])
     text_input_ids = torch.cat([example["text_input_ids"] for example in data], dim=0)
     face_id_embed = torch.stack([example["face_id_embed"] for example in data])
-    drop_image_embeds = [example["drop_image_embed"] for example in data]
+    drop_image_embeds = torch.Tensor([example["drop_image_embed"] for example in data])
 
     return {
         "images": images,
@@ -166,7 +161,6 @@ def parse_args():
         "--data_json_file",
         type=str,
         default=None,
-        required=True,
         help="Training data",
     )
     parser.add_argument(
@@ -180,7 +174,6 @@ def parse_args():
         "--image_encoder_path",
         type=str,
         default=None,
-        required=True,
         help="Path to CLIP image encoder",
     )
     parser.add_argument(
@@ -219,6 +212,9 @@ def parse_args():
     parser.add_argument("--num_train_epochs", type=int, default=100)
     parser.add_argument(
         "--train_batch_size", type=int, default=8, help="Batch size (per device) for the training dataloader."
+    )
+    parser.add_argument(
+        "--buffer_size", type=int, default=0, help="Buffer size."
     )
     parser.add_argument(
         "--dataloader_num_workers",
@@ -294,7 +290,7 @@ def main():
     unet.requires_grad_(False)
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
-    image_encoder.requires_grad_(False)
+    # image_encoder.requires_grad_(False)
     
     #ip-adapter
     image_proj_model = MLPProjModel(
@@ -336,10 +332,11 @@ def main():
     optimizer = torch.optim.AdamW(params_to_opt, lr=args.learning_rate, weight_decay=args.weight_decay)
     
     # dataloader
-    train_dataset = MyDataset(args.data_json_file, tokenizer=tokenizer, size=args.resolution, image_root_path=args.data_root_path)
+    train_dataset = MyDataset(args.data_root_path, tokenizer=tokenizer, size=args.resolution).get_ds()
+    if args.buffer_size:
+        train_dataset = train_dataset.shuffle(buffer_size=args.buffer_size)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
-        shuffle=True,
         collate_fn=collate_fn,
         batch_size=args.train_batch_size,
         num_workers=args.dataloader_num_workers,
@@ -401,4 +398,4 @@ def main():
             begin = time.perf_counter()
                 
 if __name__ == "__main__":
-    main()    
+    main()
