@@ -274,6 +274,8 @@ def main():
         project_config=accelerator_project_config,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
     )
+    accelerator.print(f"num_processes={accelerator.num_processes}")
+    accelerator.print(f"mixed_precision={accelerator.mixed_precision}")
     
     if accelerator.is_main_process:
         if args.output_dir is not None:
