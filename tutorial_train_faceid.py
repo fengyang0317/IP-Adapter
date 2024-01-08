@@ -327,16 +327,6 @@ def main():
     
     ip_adapter = IPAdapter(unet, image_proj_model, adapter_modules, args.pretrained_ip_adapter_path)
     
-    weight_dtype = torch.float32
-    if accelerator.mixed_precision == "fp16":
-        weight_dtype = torch.float16
-    elif accelerator.mixed_precision == "bf16":
-        weight_dtype = torch.bfloat16
-    #unet.to(accelerator.device, dtype=weight_dtype)
-    vae.to(accelerator.device, dtype=weight_dtype)
-    text_encoder.to(accelerator.device, dtype=weight_dtype)
-    #image_encoder.to(accelerator.device, dtype=weight_dtype)
-    
     # optimizer
     params_to_opt = itertools.chain(ip_adapter.image_proj_model.parameters(),  ip_adapter.adapter_modules.parameters())
     optimizer = torch.optim.AdamW(params_to_opt, lr=args.learning_rate, weight_decay=args.weight_decay)
@@ -352,7 +342,8 @@ def main():
     )
     
     # Prepare everything with our `accelerator`.
-    ip_adapter, optimizer, train_dataloader = accelerator.prepare(ip_adapter, optimizer, train_dataloader)
+    ip_adapter, optimizer, train_dataloader, vae, text_encoder = accelerator.prepare(
+        ip_adapter, optimizer, train_dataloader, vae, text_encoder)
     
     global_step = 0
     for epoch in range(0, args.num_train_epochs):
@@ -362,7 +353,7 @@ def main():
             with accelerator.accumulate(ip_adapter):
                 # Convert images to latent space
                 with torch.no_grad():
-                    latents = vae.encode(batch["images"].to(accelerator.device, dtype=weight_dtype)).latent_dist.sample()
+                    latents = vae.encode(batch["images"]).latent_dist.sample()
                     latents = latents * vae.config.scaling_factor
 
                 # Sample noise that we'll add to the latents
@@ -376,10 +367,10 @@ def main():
                 # (this is the forward diffusion process)
                 noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
             
-                image_embeds = batch["face_id_embed"].to(accelerator.device, dtype=weight_dtype)
+                image_embeds = batch["face_id_embed"]
             
                 with torch.no_grad():
-                    encoder_hidden_states = text_encoder(batch["text_input_ids"].to(accelerator.device))[0]
+                    encoder_hidden_states = text_encoder(batch["text_input_ids"])[0]
                 
                 noise_pred = ip_adapter(noisy_latents, timesteps, encoder_hidden_states, image_embeds)
         
