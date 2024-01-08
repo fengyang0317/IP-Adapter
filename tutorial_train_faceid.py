@@ -212,6 +212,9 @@ def parse_args():
         default=1e-4,
         help="Learning rate to use.",
     )
+    parser.add_argument(
+        "--gradient_accumulation_steps", type=int, default=1, help="Gradient accumulation steps."
+    )
     parser.add_argument("--weight_decay", type=float, default=1e-2, help="Weight decay to use.")
     parser.add_argument("--num_train_epochs", type=int, default=100)
     parser.add_argument(
@@ -273,6 +276,7 @@ def main():
         mixed_precision=args.mixed_precision,
         log_with=args.report_to,
         project_config=accelerator_project_config,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
     )
     
     if accelerator.is_main_process:
